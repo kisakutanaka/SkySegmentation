@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PP-MobileSeg-Tiny (PaddleSeg / Apache-2.0) を、このサンプル用の ONNX に変換する。
+"""PP-MobileSeg-Base (PaddleSeg / Apache-2.0) を、このサンプル用の ONNX に変換する。
 
 生成物 models/pp_mobileseg_tiny_ade20k_512.onnx はリポジトリに同梱済みなので、
 このスクリプトを実行する必要は普段ありません。再現性のために置いてあります。
@@ -15,7 +15,7 @@
   1. PaddleSeg 本体（config が必要）と学習済み重みを取得
   2. F.interpolate にパッチを当てる（後述）
   3. 最終アップサンプルを含まない形でエクスポート
-     → 出力が [1,150,32,32] の低解像度ロジットになり、ブラウザ側で扱える大きさになる
+     → 出力が [1,150,64,64] の低解像度ロジットになり、ブラウザ側で扱える大きさになる
        （素直に出すと [1,150,512,512] = float32 で 157MB になり毎フレーム読み出せない）
   4. paddle2onnx → onnxslim
   5. 実写で検証
@@ -26,9 +26,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 WORK = ROOT / "tools" / "_work"
-OUT = ROOT / "models" / "pp_mobileseg_tiny_ade20k_512.onnx"
-CONFIG = "PaddleSeg/configs/pp_mobileseg/pp_mobileseg_tiny_ade20k_512x512_80k.yml"
-WEIGHTS_URL = "https://bj.bcebos.com/paddleseg/dygraph/ade20k/pp_mobileseg_tiny/model.pdparams"
+OUT = ROOT / "models" / "pp_mobileseg_base_ade20k_512.onnx"
+CONFIG = "PaddleSeg/configs/pp_mobileseg/pp_mobileseg_base_ade20k_512x512_80k.yml"
+WEIGHTS_URL = "https://bj.bcebos.com/paddleseg/dygraph/ade20k/pp_mobileseg_base/model.pdparams"
 INPUT_SIZE = 512
 
 

@@ -10,6 +10,7 @@ const viewCtx = view.getContext('2d');
 const startBtn = document.getElementById('start');
 const statusEl = document.getElementById('status');
 const statsEl = document.getElementById('stats');
+const debugEl = document.getElementById('debug');
 
 // 前景（空以外）だけを切り抜くための作業用キャンバス
 const fg = document.createElement('canvas');
@@ -19,6 +20,10 @@ const fgCtx = fg.getContext('2d');
 const maskCanvas = document.createElement('canvas');
 const maskCtx = maskCanvas.getContext('2d');
 let maskImage = null;
+// デバッグ表示用。こちらは逆に「空である度合い」を色付きで持つ
+const skyCanvas = document.createElement('canvas');
+const skyCtx = skyCanvas.getContext('2d');
+let skyImage = null;
 let smoothed = null; // 時間平滑化した空確率
 const skyCenter = { x: 0.5, y: 0.3 }; // 空領域の重心（スマイリーの位置）
 
@@ -82,9 +87,10 @@ async function inferenceLoop(segmenter) {
 function updateMask({ width, height, data }) {
   if (!smoothed || smoothed.length !== data.length) {
     smoothed = Float32Array.from(data);
-    maskCanvas.width = width;
-    maskCanvas.height = height;
+    maskCanvas.width = skyCanvas.width = width;
+    maskCanvas.height = skyCanvas.height = height;
     maskImage = maskCtx.createImageData(width, height);
+    skyImage = skyCtx.createImageData(width, height);
   } else {
     for (let i = 0; i < data.length; i++) {
       smoothed[i] = smoothed[i] * MASK_INERTIA + data[i] * (1 - MASK_INERTIA);
@@ -93,6 +99,7 @@ function updateMask({ width, height, data }) {
 
   // アルファ = 1 - 空確率 = 前景として残す度合い。あわせて空の重心も求める。
   const px = maskImage.data;
+  const skyPx = skyImage.data;
   let sumX = 0;
   let sumY = 0;
   let sumSky = 0;
@@ -100,12 +107,17 @@ function updateMask({ width, height, data }) {
     for (let x = 0; x < width; x++, i++) {
       const sky = smoothed[i];
       px[i * 4 + 3] = (1 - sky) * 255;
+      skyPx[i * 4] = 0;
+      skyPx[i * 4 + 1] = 229;
+      skyPx[i * 4 + 2] = 255;
+      skyPx[i * 4 + 3] = sky * 255;
       sumX += x * sky;
       sumY += y * sky;
       sumSky += sky;
     }
   }
   maskCtx.putImageData(maskImage, 0, 0);
+  skyCtx.putImageData(skyImage, 0, 0);
 
   if (sumSky > width * height * 0.02) {
     skyCenter.x += (sumX / sumSky / width - skyCenter.x) * 0.2;
@@ -122,6 +134,17 @@ function render(now) {
 
   // 1. 後景：カメラ映像をそのまま
   viewCtx.drawImage(video, 0, 0, w, h);
+
+  // デバッグ表示：空と判定された領域を塗りつぶす（合成はしない）
+  if (debugEl.checked) {
+    if (skyImage) {
+      viewCtx.globalAlpha = 0.55;
+      viewCtx.drawImage(skyCanvas, 0, 0, w, h);
+      viewCtx.globalAlpha = 1;
+    }
+    updateStats(now);
+    return;
+  }
 
   // 2. 空に浮かぶスマイリー
   const size = Math.min(w, h) * SMILEY_SCALE;
@@ -141,6 +164,10 @@ function render(now) {
     viewCtx.drawImage(fg, 0, 0);
   }
 
+  updateStats(now);
+}
+
+function updateStats(now) {
   if (lastFrame) fps = fps * 0.9 + (1000 / (now - lastFrame)) * 0.1;
   lastFrame = now;
   statsEl.textContent = `推論 ${inferMs.toFixed(0)} ms / 描画 ${fps.toFixed(0)} fps`;
