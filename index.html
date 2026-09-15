@@ -33,8 +33,6 @@
   button:disabled { background: #444; cursor: default; }
   #status { font-size: 13px; color: #aaa; min-height: 1.4em; text-align: center; margin: 0; }
   #debugbar { font-size: 13px; color: #ccc; display: flex; align-items: center; gap: 6px; }
-  #modelbar { font-size: 13px; color: #ccc; display: flex; align-items: center; gap: 6px; }
-  select { font-size: 13px; padding: 4px 6px; border-radius: 6px; }
 </style>
 </head>
 <body>
@@ -42,9 +40,7 @@
 <h1>空だけを分離してスマイリーを浮かべるサンプル</h1>
 
 <button id="start">カメラを開始</button>
-<p id="status">「カメラを開始」を押すと、モデル（約23MB）を読み込みます。</p>
-
-<label id="modelbar">モデル <select id="model"></select></label>
+<p id="status">「カメラを開始」を押すと、モデル（約200KB）を読み込みます。</p>
 
 <label id="debugbar"><input type="checkbox" id="debug"> 空領域を塗りつぶして表示（デバッグ）</label>
 

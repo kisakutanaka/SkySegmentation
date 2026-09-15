@@ -20,16 +20,19 @@ tools/              モデルを再生成するためのスクリプト群（通
 
 ## 同梱モデル
 
-画面上部のセレクトボックスで切り替えて見比べられます。
+ページが読み込むのは **`models/tinyskynet_sky_256.onnx` の 199KB だけ**です。
 
-| モデル | サイズ | 推論(Chrome/wasm 1スレッド) | 中身 |
-|---|---|---|---|
-| **PP-MobileSeg-Base** | 22.6 MB | 約 130 ms | ADE20K 150 クラスのうち `sky` を取り出す。品質重視 |
-| **TinySkyNet** | **199 KB** | **約 13 ms** | 上のモデルを教師に蒸留した空専用の二値 CNN（49,233 パラメータ）|
+| 項目 | 値 |
+|---|---|
+| サイズ | **199 KB** |
+| パラメータ数 | 49,233（depthwise separable conv のみの UNet）|
+| 入力 / 出力 | `[1,3,256,256]` → `[1,1,128,128]` のロジット |
+| 推論（Chrome / wasm 1スレッド） | **約 12 ms** |
 
-TinySkyNet は Open Images の市街地写真 3,839 枚に教師で擬似ラベルを付けて学習したものです。
-**サイズ 1/116・速度 10 倍**になる代わりに、明るく平坦な壁面を空と誤判定することがあります。
-作り方は [tools/README.md](tools/README.md) に、判断材料は [models/README.md](models/README.md) にまとめています。
+ADE20K 150 クラスのモデル（PP-MobileSeg-Base, 22.6MB）を教師にして、
+「空か否か」の 1 ビットだけを出すように蒸留したものです。
+`models/` にはその教師も置いてありますが、**擬似ラベルを作り直すとき以外は使いません**。
+作り方は [tools/README.md](tools/README.md)、判断材料は [models/README.md](models/README.md) を参照してください。
 
 ## 使い方（ローカル）
 
@@ -68,16 +71,14 @@ python3 -m http.server 8000
 
 ### 1. 空マスクの推論（`sky-segmenter.js`）
 
-ADE20K 150 クラスのセマンティックセグメンテーションモデルを onnxruntime-web で実行し、
-**クラス 2 = `sky`** の確率だけを取り出します。
+空/非空の二値モデルを onnxruntime-web で実行して確率マップを得ます。
 
 - 前処理: 512×512 に縮小 → RGB を 0-1 → ImageNet 正規化 → NCHW
-- 後処理: 出力ロジット `[1,150,64,64]` から
-  `p = sigmoid(sky - max(その他のクラス) - skyMargin)` で空である確率（0〜1）を作る
-  - 150 クラスの softmax を全部計算するより安く、境界がなめらかになります
-  - `skyMargin`（既定 2）は「空が他クラスに差をつけて勝ったときだけ空とみなす」ためのバイアス。
-    霞んだ遠景の地面は `sky=+5.65` に対し `land=+3.33` と僅差で空が勝ってしまうため、
-    単純な argmax（margin 0）だと地平線に空の帯が残ります。本当の空は差が 8 前後あるので影響を受けません
+- 後処理: 出力ロジット `[1,1,128,128]` を sigmoid して空である確率（0〜1）にする
+  - ADE20K 系の 150 クラスモデルに差し替えた場合は、
+    `p = sigmoid(sky - max(その他のクラス) - skyMargin)` の経路が自動で使われます
+    （出力チャンネル数で判定）。`skyMargin` は「空が他クラスに差をつけて勝ったときだけ
+    空とみなす」ためのバイアスで、霞んだ遠景の地面が僅差で空と判定されるのを防ぎます
 - **エッジ吸着**: 64×64 のままでは稜線がにじむため、映像の輝度をガイドにした
   [ガイデッドフィルタ](https://kaiminghe.github.io/eccv10/) を 256×256 で掛けて
   マスクを被写体の輪郭に吸着させます（+約 10 ms、モデルを重くせずに境界だけ改善できる）
@@ -106,7 +107,8 @@ ADE20K 150 クラスのセマンティックセグメンテーションモデル
 
 ## 他のプロジェクトで使うには
 
-`sky-segmenter.js` と `models/` をコピーし、onnxruntime-web を読み込むだけです。
+`sky-segmenter.js` と `models/tinyskynet_sky_256.onnx`（199KB）をコピーし、
+onnxruntime-web を読み込むだけです。
 
 ```html
 <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.29.0/dist/ort.min.js"></script>
@@ -126,13 +128,15 @@ ADE20K 150 クラスのセマンティックセグメンテーションモデル
 
 | 環境 | マスク 1 枚（推論＋エッジ吸着） |
 |---|---|
-| Apple Silicon Mac / Chrome / wasm 1スレッド（PP-MobileSeg-Base） | 約 130 ms |
-| 同（TinySkyNet） | 約 13 ms |
+| Apple Silicon Mac / Chrome / wasm 1スレッド | 約 12 ms |
+| 同 / Python onnxruntime 1スレッド（推論のみ） | 約 4.8 ms |
 
 スマートフォンでは数倍かかりますが、上記のループ分離により**表示は 60fps のまま**です
 （マスクの更新だけが数 fps になり、カメラを速く振ったときに少し遅れて追従します）。
 
-さらに軽くしたい場合は TinySkyNet に切り替えてください（`app.js` の `MODELS` 参照）。
+精度を優先したい場合は、教師の PP-MobileSeg-Base に戻せます（`sky-segmenter.js` の
+`modelUrl` を `./models/pp_mobileseg_base_ade20k_512.onnx`、`inputSize` を `512` にするだけ）。
+22.6MB になり推論も 10 倍かかりますが、明るい壁面の誤判定は減ります。
 
 ### さらに速くしたい場合
 
@@ -146,6 +150,6 @@ ADE20K 150 クラスのセマンティックセグメンテーションモデル
 
 - **コード**: MIT（[LICENSE](LICENSE)）
 - **同梱モデル**:
-  - PP-MobileSeg-Base: Apache-2.0（PaddleSeg）
-  - TinySkyNet: MIT（このリポジトリで学習。学習画像は Open Images の CC BY 2.0 写真）
+  - TinySkyNet（ページが読み込むもの）: MIT（このリポジトリで学習。学習画像は Open Images の CC BY 2.0 写真）
+  - PP-MobileSeg-Base（教師。擬似ラベル生成用）: Apache-2.0（PaddleSeg）
   — 学習データに関する注意を含め、[models/README.md](models/README.md) を必ずお読みください

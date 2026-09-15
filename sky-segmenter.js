@@ -13,9 +13,9 @@
 
 export const SKY_SEGMENTER_DEFAULTS = {
   // ---- ここを差し替えればモデルを変更できます ----
-  modelUrl: './models/pp_mobileseg_base_ade20k_512.onnx',
-  inputSize: 512, // モデルの入力解像度（この ONNX は固定 512x512）
-  skyClassIndex: 2, // ADE20K の 150 クラス中 2 番が "sky"
+  modelUrl: './models/tinyskynet_sky_256.onnx',
+  inputSize: 256, // モデルの入力解像度（この ONNX は固定 256x256）
+  skyClassIndex: 2, // ADE20K 系のモデルに差し替えたとき、150 クラス中 2 番が "sky"
   // ---------------------------------------------
   // 「空」が他クラスにこれだけ差をつけて勝ったときだけ空とみなすマージン。
   // 0 だと単純な argmax と同じで、霞んだ遠景の地面を空と誤判定しやすい

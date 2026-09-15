@@ -1,21 +1,7 @@
 # 同梱モデルについて
 
-## `pp_mobileseg_base_ade20k_512.onnx` (約 22.6 MB)
-
-| 項目 | 内容 |
-|---|---|
-| 元モデル | [PP-MobileSeg-Base](https://github.com/PaddlePaddle/PaddleSeg/tree/develop/configs/pp_mobileseg) (PaddleSeg) |
-| ライセンス | **Apache-2.0**（`LICENSE-PaddleSeg.txt` 参照） |
-| 学習データ | ADE20K（150クラス、`sky` はインデックス 2） |
-| パラメータ数 | 5.62 M / ADE20K mIoU 41.57% |
-| 入力 | `x` : `[1, 3, 512, 512]` float32、RGB を 0-1 にして ImageNet 正規化 |
-| 出力 | `[1, 150, 64, 64]` の低解像度ロジット |
-| 変換 | `tools/convert.py`（Paddle → ONNX → onnxslim。最終アップサンプルは除去済み） |
-
-出力が 64×64 と粗いのは、境界の精緻化を `sky-segmenter.js` 側のガイデッドフィルタで
-行っているためです（モデルを重くせずにエッジを立てられる）。
-
----
+ページが実際に読み込むのは **TinySkyNet (199KB)** だけです。
+PP-MobileSeg-Base は擬似ラベルを作り直すときに使う教師で、ブラウザでは読み込まれません。
 
 ## `tinyskynet_sky_256.onnx` (199 KB)
 
@@ -33,6 +19,23 @@
 **既知の弱点**: 明るく平坦な壁面（白い建物など）を空と誤判定することがあります。
 学習画像・検証画像のどちらでも教師との一致度がほぼ同じ（IoU 0.83 / 0.80）なので、
 過学習ではなく容量不足です。チャンネル数を増やし学習画像を増やせば改善する見込みです。
+
+---
+
+## `pp_mobileseg_base_ade20k_512.onnx` (約 22.6 MB)
+
+| 項目 | 内容 |
+|---|---|
+| 元モデル | [PP-MobileSeg-Base](https://github.com/PaddlePaddle/PaddleSeg/tree/develop/configs/pp_mobileseg) (PaddleSeg) |
+| ライセンス | **Apache-2.0**（`LICENSE-PaddleSeg.txt` 参照） |
+| 学習データ | ADE20K（150クラス、`sky` はインデックス 2） |
+| パラメータ数 | 5.62 M / ADE20K mIoU 41.57% |
+| 入力 | `x` : `[1, 3, 512, 512]` float32、RGB を 0-1 にして ImageNet 正規化 |
+| 出力 | `[1, 150, 64, 64]` の低解像度ロジット |
+| 変換 | `tools/convert.py`（Paddle → ONNX → onnxslim。最終アップサンプルは除去済み） |
+
+出力が 64×64 と粗いのは、境界の精緻化を `sky-segmenter.js` 側のガイデッドフィルタで
+行っているためです（モデルを重くせずにエッジを立てられる）。
 
 ---
 
