@@ -1,7 +1,8 @@
 import { createSkySegmenter } from './sky-segmenter.js';
 
-const SMILEY = '😀';
-const SMILEY_SCALE = 0.28; // 画面短辺に対するスマイリーの大きさ
+const KAIJU_SRC = './kaiju.png';
+const KAIJU_SCALE = 0.45; // 画面短辺に対する怪獣の大きさ
+const KAIJU_POS = { x: 0.5, y: 0.5 }; // 画面内の位置（0〜1）
 const MASK_INERTIA = 0.6; // マスクの時間平滑化（大きいほどブレないが追従が遅い）
 
 const video = document.getElementById('camera');
@@ -25,7 +26,9 @@ const skyCanvas = document.createElement('canvas');
 const skyCtx = skyCanvas.getContext('2d');
 let skyImage = null;
 let smoothed = null; // 時間平滑化した空確率
-const skyCenter = { x: 0.5, y: 0.3 }; // 空領域の重心（スマイリーの位置）
+
+const kaiju = new Image();
+kaiju.src = KAIJU_SRC;
 
 let segmenter = null;
 let running = false;
@@ -98,32 +101,19 @@ function updateMask({ width, height, data }) {
     }
   }
 
-  // アルファ = 1 - 空確率 = 前景として残す度合い。あわせて空の重心も求める。
+  // アルファ = 1 - 空確率 = 前景として残す度合い
   const px = maskImage.data;
   const skyPx = skyImage.data;
-  let sumX = 0;
-  let sumY = 0;
-  let sumSky = 0;
-  for (let y = 0, i = 0; y < height; y++) {
-    for (let x = 0; x < width; x++, i++) {
-      const sky = smoothed[i];
-      px[i * 4 + 3] = (1 - sky) * 255;
-      skyPx[i * 4] = 0;
-      skyPx[i * 4 + 1] = 229;
-      skyPx[i * 4 + 2] = 255;
-      skyPx[i * 4 + 3] = sky * 255;
-      sumX += x * sky;
-      sumY += y * sky;
-      sumSky += sky;
-    }
+  for (let i = 0; i < smoothed.length; i++) {
+    const sky = smoothed[i];
+    px[i * 4 + 3] = (1 - sky) * 255;
+    skyPx[i * 4] = 0;
+    skyPx[i * 4 + 1] = 229;
+    skyPx[i * 4 + 2] = 255;
+    skyPx[i * 4 + 3] = sky * 255;
   }
   maskCtx.putImageData(maskImage, 0, 0);
   skyCtx.putImageData(skyImage, 0, 0);
-
-  if (sumSky > width * height * 0.02) {
-    skyCenter.x += (sumX / sumSky / width - skyCenter.x) * 0.2;
-    skyCenter.y += (sumY / sumSky / height - skyCenter.y) * 0.2;
-  }
 }
 
 function render(now) {
@@ -147,12 +137,13 @@ function render(now) {
     return;
   }
 
-  // 2. 空に浮かぶスマイリー
-  const size = Math.min(w, h) * SMILEY_SCALE;
-  viewCtx.font = `${size}px "Apple Color Emoji", "Noto Color Emoji", "Segoe UI Emoji", sans-serif`;
-  viewCtx.textAlign = 'center';
-  viewCtx.textBaseline = 'middle';
-  viewCtx.fillText(SMILEY, skyCenter.x * w, skyCenter.y * h + Math.sin(now / 900) * size * 0.06);
+  // 2. 画面中央に怪獣
+  if (kaiju.complete && kaiju.naturalWidth) {
+    const kw = Math.min(w, h) * KAIJU_SCALE;
+    const kh = (kw * kaiju.naturalHeight) / kaiju.naturalWidth;
+    const bob = Math.sin(now / 900) * kh * 0.02;
+    viewCtx.drawImage(kaiju, KAIJU_POS.x * w - kw / 2, KAIJU_POS.y * h - kh / 2 + bob, kw, kh);
+  }
 
   // 3. 前景（空以外）だけを切り抜く：マスクのアルファで destination-in
   if (maskImage) {
@@ -161,7 +152,7 @@ function render(now) {
     fgCtx.drawImage(video, 0, 0, w, h);
     fgCtx.globalCompositeOperation = 'destination-in';
     fgCtx.drawImage(maskCanvas, 0, 0, w, h); // 低解像度→全画面の拡大がそのまま境界のぼかしになる
-    // 4. 前景を最前面へ。これでスマイリーが建物や人の背後に回り込む
+    // 4. 前景を最前面へ。これで怪獣が建物の背後に回り込む
     viewCtx.drawImage(fg, 0, 0);
   }
 

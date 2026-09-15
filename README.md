@@ -1,8 +1,8 @@
 # Sky Segmentation Composite — ブラウザだけで空を分離して合成するサンプル
 
 スマホ／PC のブラウザでカメラ映像から**空**を分離し、
-**後景（空）→ スマイリー → 前景（空以外）** の順に重ねてリアルタイム合成します。
-スマイリーは空に浮かび、建物や山の背後に回り込みます。
+**後景（空）→ 怪獣 → 前景（空以外）** の順に重ねてリアルタイム合成します。
+怪獣は空の側に描かれるので、手前の建物の背後に回り込みます。
 
 - ビルド不要・npm 不要。**静的ファイルを置くだけ**（GitHub Pages でそのまま動きます）
 - 推論は端末内で完結。画像はサーバーに送られません
@@ -106,10 +106,10 @@ python3 -m http.server 8000
 
 ```
 ① view に カメラ映像 を描く            ← 後景（空を含む）
-② その上に 😀 を描く
+② その上に 怪獣（kaiju.png）を画面中央に描く
 ③ 作業用 canvas に カメラ映像 を描き、
    globalCompositeOperation='destination-in' でマスクを重ねて 前景だけ を残す
-④ ③ を view の最前面に描く            ← スマイリーが建物や山の背後に回り込む
+④ ③ を view の最前面に描く            ← 怪獣が建物の背後に回り込む
 ```
 
 マスクはガイデッドフィルタ後の 256×256 で、`drawImage` の拡大が
@@ -159,6 +159,8 @@ onnxruntime-web を読み込むだけです。
 ## ライセンス
 
 - **コード**: MIT（[LICENSE](LICENSE)）
+- **`kaiju.png`**: [openclipart #346163 "Monster D" by mickleness](https://openclipart.org/detail/346163/monster-d)
+  — **Public Domain (CC0)**。透明な余白を落として 550×600 に縮小しています
 - **同梱モデル**:
   - TinySkyNet（ページが読み込むもの）: MIT（このリポジトリで学習。学習画像は Open Images の CC BY 2.0 写真）
   - PP-MobileSeg-Base（教師。擬似ラベル生成用）: Apache-2.0（PaddleSeg）
