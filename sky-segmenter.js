@@ -22,11 +22,16 @@ export const SKY_SEGMENTER_DEFAULTS = {
   // （実測では sky=+5.65 に対し land=+3.33 で空が勝ってしまう）。
   // 2 前後にすると、その帯だけが前景に戻り、本当の空（差が 8 前後）は影響を受けない。
   skyMargin: 2,
-  // モデル出力は 64x64 と粗いので、映像そのものをガイドにして
+  // モデル出力は 128x128 と粗いので、映像そのものをガイドにして
   // マスクの境界を被写体の輪郭へ吸着させる（0 にすると無効）。
-  refineRadius: 8,
+  refineRadius: 4, // ガイデッドフィルタの半径（inputSize 上の画素数）
   refineEps: 1e-4,
-  refineSize: 256, // エッジ吸着を行う解像度（inputSize の約数にすること）
+  // 出力マスクの解像度。inputSize の整数倍にすること。
+  // ここを上げるほど輪郭がシャープになる（コストは後述の fast guided filter で微増のみ）。
+  refineSize: 512,
+  // 確率の 0→1 遷移をどれだけ立てるか。1 でそのまま、大きいほど輪郭がくっきりする。
+  // 0.5 を境に (p-0.5)*k+0.5 で伸ばすだけなので、位置はずらさず境界の幅だけ縮む。
+  edgeSharpness: 6,
   ortWasmPaths: 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.29.0/dist/',
 };
 
@@ -50,12 +55,15 @@ export async function createSkySegmenter(options = {}) {
   });
 
   const size = cfg.inputSize;
-  const guideSize = cfg.refineSize;
-  const guideStep = Math.max(1, Math.round(size / guideSize));
+  // 映像はマスク解像度で取り込み、モデル入力はそこから面積平均で縮小する。
+  // getImageData が 1 回で済み、縮小も単純間引きよりきれいになる。
+  const capture = Math.max(size, cfg.refineSize);
+  const pool = Math.max(1, Math.round(capture / size)); // 何画素を 1 画素に畳むか
   const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = size;
+  canvas.width = canvas.height = capture;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  const guide = new Float32Array(guideSize * guideSize);
+  const guideHi = new Float32Array(capture * capture); // 高解像度の輝度ガイド
+  const guideLo = new Float32Array(size * size); // 統計量計算用に縮小した輝度
   const inputName = session.inputNames[0];
   const outputName = session.outputNames[0];
 
@@ -64,30 +72,45 @@ export async function createSkySegmenter(options = {}) {
    * @returns {Promise<{width:number, height:number, data:Float32Array}>} 空である確率(0..1)
    */
   async function segment(source) {
-    // 1. 入力サイズに縮小して画素を取り出す
-    ctx.drawImage(source, 0, 0, size, size);
-    const { data: rgba } = ctx.getImageData(0, 0, size, size);
+    // 1. マスク解像度で取り込む
+    ctx.drawImage(source, 0, 0, capture, capture);
+    const { data: rgba } = ctx.getImageData(0, 0, capture, capture);
 
-    // 2. NCHW の Float32 に詰め替えつつ正規化
-    //    ※ Worker 実行時に ArrayBuffer が転送されるため、毎回確保し直す
+    // 2. pool×pool の面積平均でモデル入力サイズへ縮小しつつ、NCHW / 正規化 / 低解像度ガイドを同時に作る
+    //    ※ Worker 実行時に ArrayBuffer が転送されるため、input は毎回確保し直す
     const input = new Float32Array(3 * size * size);
     const plane = size * size;
-    for (let i = 0, p = 0; i < plane; i++, p += 4) {
-      input[i] = (rgba[p] / 255 - MEAN[0]) / STD[0];
-      input[i + plane] = (rgba[p + 1] / 255 - MEAN[1]) / STD[1];
-      input[i + plane * 2] = (rgba[p + 2] / 255 - MEAN[2]) / STD[2];
-    }
-
-    // 3. あわせて、エッジ吸着用のガイド画像（輝度）を 1/2 解像度で作る
-    for (let y = 0; y < guideSize; y++) {
-      for (let x = 0; x < guideSize; x++) {
-        const p = (y * guideStep * size + x * guideStep) * 4;
-        guide[y * guideSize + x] =
-          (rgba[p] * 0.299 + rgba[p + 1] * 0.587 + rgba[p + 2] * 0.114) / 255;
+    const inv = 1 / (pool * pool);
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        let r = 0;
+        let g = 0;
+        let b = 0;
+        for (let dy = 0; dy < pool; dy++) {
+          let p = ((y * pool + dy) * capture + x * pool) * 4;
+          for (let dx = 0; dx < pool; dx++, p += 4) {
+            r += rgba[p];
+            g += rgba[p + 1];
+            b += rgba[p + 2];
+          }
+        }
+        r *= inv;
+        g *= inv;
+        b *= inv;
+        const i = y * size + x;
+        input[i] = (r / 255 - MEAN[0]) / STD[0];
+        input[i + plane] = (g / 255 - MEAN[1]) / STD[1];
+        input[i + plane * 2] = (b / 255 - MEAN[2]) / STD[2];
+        guideLo[i] = (r * 0.299 + g * 0.587 + b * 0.114) / 255;
       }
     }
 
-    // 4. 推論。出力は低解像度のロジット [1, 150, h, w]
+    // 3. 高解像度のガイド（輝度）。輪郭の細さはここの解像度で決まる
+    for (let i = 0, p = 0; i < guideHi.length; i++, p += 4) {
+      guideHi[i] = (rgba[p] * 0.299 + rgba[p + 1] * 0.587 + rgba[p + 2] * 0.114) / 255;
+    }
+
+    // 4. 推論。出力は低解像度のロジット
     const outputs = await session.run({
       [inputName]: new ort.Tensor('float32', input, [1, 3, size, size]),
     });
@@ -115,19 +138,45 @@ export async function createSkySegmenter(options = {}) {
       }
     }
 
-    if (!cfg.refineRadius) return { width: w, height: h, data: coarse };
+    if (!cfg.refineRadius) {
+      return { width: w, height: h, data: sharpen(coarse, cfg.edgeSharpness) };
+    }
 
-    // 6. 粗いマスクを拡大し、映像の輪郭に吸着させる
-    const upscaled = bilinear(coarse, w, h, guideSize);
-    const refined = guidedFilter(guide, upscaled, guideSize, cfg.refineRadius, cfg.refineEps);
-    return { width: guideSize, height: guideSize, data: refined };
+    // 6. fast guided filter:
+    //    線形係数 a, b は低解像度（inputSize）で求め、それを拡大して
+    //    高解像度のガイドに当てる。box filter の計算量は据え置きのまま、
+    //    輪郭だけ capture の解像度で吸着する（He et al. 2010 の 4.1 節）。
+    const pLo = bilinear(coarse, w, h, size);
+    const { a, b } = guidedCoeffs(guideLo, pLo, size, cfg.refineRadius, cfg.refineEps);
+    const aHi = bilinear(a, size, size, capture);
+    const bHi = bilinear(b, size, size, capture);
+
+    const out = new Float32Array(guideHi.length);
+    const k = cfg.edgeSharpness;
+    for (let i = 0; i < out.length; i++) {
+      const v = (aHi[i] * guideHi[i] + bHi[i] - 0.5) * k + 0.5;
+      out[i] = v < 0 ? 0 : v > 1 ? 1 : v;
+    }
+    return { width: capture, height: capture, data: out };
   }
 
   return {
     segment,
     inputSize: size,
+    maskSize: capture,
     dispose: () => session.release?.(),
   };
+}
+
+/** 0.5 を境に確率のコントラストを立てる（遷移帯の幅を 1/k にする） */
+function sharpen(src, k) {
+  if (!k || k === 1) return src;
+  const dst = new Float32Array(src.length);
+  for (let i = 0; i < src.length; i++) {
+    const v = (src[i] - 0.5) * k + 0.5;
+    dst[i] = v < 0 ? 0 : v > 1 ? 1 : v;
+  }
+  return dst;
 }
 
 /** 正方形マスクのバイリニア拡大 */
@@ -184,11 +233,12 @@ function boxFilter(src, size, r) {
 }
 
 /**
- * ガイデッドフィルタ (He et al., 2010)。
- * ガイド画像 I の輪郭に沿うように、粗いマスク p を線形近似で作り直す。
- * モデルを重くせずに境界だけを精緻化できるのが利点。
+ * ガイデッドフィルタ (He et al., 2010) の線形係数 a, b を求める。
+ * 出力は「マスク ≒ a * ガイド輝度 + b」の形でガイドの輪郭に沿う。
+ * a, b は元画像より滑らかなので、低解像度で求めて拡大しても品質がほとんど落ちない
+ * （= fast guided filter）。
  */
-function guidedFilter(I, p, size, r, eps) {
+function guidedCoeffs(I, p, size, r, eps) {
   const n = size * size;
   const Ip = new Float32Array(n);
   const II = new Float32Array(n);
@@ -209,12 +259,5 @@ function guidedFilter(I, p, size, r, eps) {
     a[i] = cov / (varI + eps);
     b[i] = meanP[i] - a[i] * meanI[i];
   }
-  const meanA = boxFilter(a, size, r);
-  const meanB = boxFilter(b, size, r);
-
-  const out = new Float32Array(n);
-  for (let i = 0; i < n; i++) {
-    out[i] = Math.min(1, Math.max(0, meanA[i] * I[i] + meanB[i]));
-  }
-  return out;
+  return { a: boxFilter(a, size, r), b: boxFilter(b, size, r) };
 }

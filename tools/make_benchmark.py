@@ -57,7 +57,7 @@ def main():
         t0 = time.perf_counter()
         mask = seg(im)
         times.append((time.perf_counter() - t0) * 1000)
-        rows.append((name, im, overlay(im, mask), composite(im, mask, [None, None]),
+        rows.append((name, im, overlay(im, mask), composite(im, mask),
                      float((mask > 0.5).mean())))
 
     # セル寸法は最初の画像の縦横比にそろえる（縦横比が違う画像は個別に計算）

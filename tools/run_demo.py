@@ -10,12 +10,17 @@ from pathlib import Path
 
 import numpy as np
 import onnxruntime as ort
-from PIL import Image, ImageDraw
+from PIL import Image
 
 MEAN = np.array([0.485, 0.456, 0.406], np.float32)
 STD = np.array([0.229, 0.224, 0.225], np.float32)
-REFINE = 256      # エッジ吸着を行う解像度
+REFINE = 512      # マスク／ガイドの解像度（sky-segmenter.js の refineSize）
+RADIUS = 4        # ガイデッドフィルタの半径（モデル入力解像度上の画素数）
+EPS = 1e-4
+SHARPEN = 6       # 確率の 0→1 遷移をどれだけ立てるか
 INERTIA = 0.6     # 動画でのマスクの時間平滑化
+KAIJU = Path(__file__).resolve().parent.parent / 'kaiju.png'
+KAIJU_SCALE = 0.45
 
 
 def box(a, r):
@@ -27,10 +32,15 @@ def box(a, r):
     return (c[:, hi] - c[:, lo]) / (hi - lo)[None, :]
 
 
-def guided(I, p, r=8, eps=1e-4):
+def guided_coeffs(I, p, r=RADIUS, eps=EPS):
+    """ガイデッドフィルタの線形係数 a, b（マスク ≒ a * ガイド + b）"""
     mI, mp = box(I, r), box(p, r)
     a = (box(I * p, r) - mI * mp) / ((box(I * I, r) - mI * mI) + eps)
-    return np.clip(box(a, r) * I + box(mp - a * mI, r), 0, 1)
+    return box(a, r), box(mp - a * mI, r)
+
+
+def resize(a, size):
+    return np.asarray(Image.fromarray(a).resize((size, size), Image.BILINEAR), np.float32)
 
 
 class Segmenter:
@@ -42,47 +52,39 @@ class Segmenter:
         self.size = shape[2] if isinstance(shape[2], int) else 512
 
     def __call__(self, im):
-        x = np.asarray(im.resize((self.size, self.size), Image.BILINEAR), np.float32) / 255.
-        out = self.sess.run(None, {self.name: ((x - MEAN) / STD).transpose(2, 0, 1)[None]})[0][0]
+        size, cap = self.size, max(self.size, REFINE)
+        pool = max(1, round(cap / size))
+
+        # 1. マスク解像度で取り込み、面積平均でモデル入力サイズへ落とす
+        hi = np.asarray(im.convert('RGB').resize((cap, cap), Image.BILINEAR), np.float32)
+        lo = hi.reshape(size, pool, size, pool, 3).mean((1, 3))
+
+        # 2. 推論 → 空である確率（低解像度）
+        x = ((lo / 255. - MEAN) / STD).transpose(2, 0, 1)[None]
+        out = self.sess.run(None, {self.name: x})[0][0]
         if out.shape[0] == 1:                      # 二値モデル
             prob = 1 / (1 + np.exp(-out[0]))
         else:                                      # ADE20K 150 クラスモデル
             d = out[2] - np.max(np.delete(out, 2, 0), 0)
             prob = 1 / (1 + np.exp(-(d - 2.0)))
-        guide = np.asarray(im.convert('L').resize((REFINE, REFINE), Image.BILINEAR), np.float32) / 255.
-        up = np.asarray(Image.fromarray((prob * 255).astype(np.uint8))
-                        .resize((REFINE, REFINE), Image.BILINEAR), np.float32) / 255.
-        return guided(guide, up)
+
+        # 3. fast guided filter: 係数はモデル入力解像度で求め、高解像度のガイドに当てる
+        w = np.array([0.299, 0.587, 0.114], np.float32)
+        gl, gh = (lo @ w) / 255., (hi @ w) / 255.
+        a, b = guided_coeffs(gl, resize((prob * 255).astype(np.uint8), size) / 255.)
+        mask = resize(a.astype(np.float32), cap) * gh + resize(b.astype(np.float32), cap)
+        return np.clip((mask - 0.5) * SHARPEN + 0.5, 0, 1)
 
 
-def draw_smiley(img, cx, cy, size):
-    """絵文字フォントに依存しないよう図形で描く"""
-    d = ImageDraw.Draw(img)
-    r = size / 2
-    d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(255, 205, 60), outline=(230, 170, 30), width=max(2, int(r * 0.05)))
-    er = r * 0.13
-    for ex in (cx - r * 0.35, cx + r * 0.35):
-        d.ellipse([ex - er, cy - r * 0.3 - er * 1.4, ex + er, cy - r * 0.3 + er * 1.4], fill=(60, 40, 20))
-    d.arc([cx - r * 0.55, cy - r * 0.2, cx + r * 0.55, cy + r * 0.6], 20, 160,
-          fill=(60, 40, 20), width=max(3, int(r * 0.11)))
-
-
-def composite(im, mask, smoothed_center):
-    """後景(元画像) → スマイリー → 前景(空以外) の順に重ねる"""
+def composite(im, mask):
+    """後景(元画像) → 怪獣 → 前景(空以外) の順に重ねる（app.js と同じ）"""
     w, h = im.size
-    ys, xs = np.mgrid[0:mask.shape[0], 0:mask.shape[1]]
-    total = mask.sum()
-    if total > mask.size * 0.02:
-        cx, cy = float((xs * mask).sum() / total / mask.shape[1]), float((ys * mask).sum() / total / mask.shape[0])
-        if smoothed_center[0] is None:
-            smoothed_center[:] = [cx, cy]
-        else:
-            smoothed_center[0] += (cx - smoothed_center[0]) * 0.2
-            smoothed_center[1] += (cy - smoothed_center[1]) * 0.2
-    cx, cy = smoothed_center if smoothed_center[0] is not None else (0.5, 0.3)
-
     out = im.convert('RGB').copy()
-    draw_smiley(out, cx * w, cy * h, min(w, h) * 0.28)
+    kaiju = Image.open(KAIJU).convert('RGBA')
+    kw = min(w, h) * KAIJU_SCALE
+    kh = kw * kaiju.height / kaiju.width
+    kaiju = kaiju.resize((int(kw), int(kh)), Image.LANCZOS)
+    out.paste(kaiju, (int(w / 2 - kw / 2), int(h / 2 - kh / 2)), kaiju)
     alpha = Image.fromarray(((1 - mask) * 255).astype(np.uint8)).resize((w, h), Image.BILINEAR)
     out.paste(im.convert('RGB'), (0, 0), alpha)     # 前景を最前面に戻す
     return out
@@ -102,7 +104,7 @@ def run_image(seg, path, out_dir):
     sheet = Image.new('RGB', (w * 3, h))
     sheet.paste(im, (0, 0))
     sheet.paste(overlay(im, mask), (w, 0))
-    sheet.paste(composite(im, mask, [None, None]), (w * 2, 0))
+    sheet.paste(composite(im, mask), (w * 2, 0))
     sheet.thumbnail((1800, 1800), Image.LANCZOS)
     dst = out_dir / f'{Path(path).stem}_result.png'
     sheet.save(dst)
@@ -117,7 +119,6 @@ def run_video(seg, path, out_dir, fps=30):
         frames = sorted(tmp.glob('f_*.png'))
         print(f'{Path(path).name}: {len(frames)} frames')
         smoothed = None
-        center = [None, None]
         (tmp / 'out').mkdir()
         for i, f in enumerate(frames):
             im = Image.open(f).convert('RGB')
@@ -125,7 +126,7 @@ def run_video(seg, path, out_dir, fps=30):
             smoothed = m if smoothed is None else smoothed * INERTIA + m * (1 - INERTIA)
             side = Image.new('RGB', (im.width * 2, im.height))
             side.paste(overlay(im, smoothed), (0, 0))
-            side.paste(composite(im, smoothed, center), (im.width, 0))
+            side.paste(composite(im, smoothed), (im.width, 0))
             side.save(tmp / 'out' / f.name)
             if (i + 1) % 60 == 0:
                 print(f'  {i+1}/{len(frames)}', flush=True)
