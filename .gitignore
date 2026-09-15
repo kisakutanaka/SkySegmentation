@@ -4,3 +4,5 @@ dataset/
 tools/_work/
 
 tools/__pycache__/
+test_img/
+docs/

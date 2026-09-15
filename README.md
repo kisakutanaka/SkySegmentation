@@ -34,6 +34,16 @@ ADE20K 150 クラスのモデル（PP-MobileSeg-Base, 22.6MB）を教師にし�
 `models/` にはその教師も置いてありますが、**擬似ラベルを作り直すとき以外は使いません**。
 作り方は [tools/README.md](tools/README.md)、判断材料は [models/README.md](models/README.md) を参照してください。
 
+## 手元の画像・動画で試す
+
+```bash
+tools/.venv/bin/python tools/run_demo.py models/tinyskynet_sky_256.onnx \
+    path/to/photo.png path/to/clip.mp4 out/
+```
+
+入力・空マスク・合成結果を並べた画像（動画なら 2 画面の mp4）が `out/` に書き出されます。
+複数の入力を並べたベンチマーク画像は `tools/make_benchmark.py` で作れます。
+
 ## 使い方（ローカル）
 
 ```bash
