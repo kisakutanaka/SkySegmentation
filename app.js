@@ -1,5 +1,15 @@
 import { createSkySegmenter } from './sky-segmenter.js';
 
+// 切り替えて見比べられるように 2 つ用意してある。
+// 実際に組み込むときは片方だけ残せばよい（差し替えは options を変えるだけ）。
+const MODELS = [
+  { label: 'PP-MobileSeg-Base — 22.6MB / 高品質', options: {} },
+  {
+    label: 'TinySkyNet — 199KB / 16倍速',
+    options: { modelUrl: './models/tinyskynet_sky_256.onnx', inputSize: 256 },
+  },
+];
+
 const SMILEY = '😀';
 const SMILEY_SCALE = 0.28; // 画面短辺に対するスマイリーの大きさ
 const MASK_INERTIA = 0.6; // マスクの時間平滑化（大きいほどブレないが追従が遅い）
@@ -11,6 +21,7 @@ const startBtn = document.getElementById('start');
 const statusEl = document.getElementById('status');
 const statsEl = document.getElementById('stats');
 const debugEl = document.getElementById('debug');
+const modelEl = document.getElementById('model');
 
 // 前景（空以外）だけを切り抜くための作業用キャンバス
 const fg = document.createElement('canvas');
@@ -27,11 +38,14 @@ let skyImage = null;
 let smoothed = null; // 時間平滑化した空確率
 const skyCenter = { x: 0.5, y: 0.3 }; // 空領域の重心（スマイリーの位置）
 
+let segmenter = null;
+let loadingModel = false;
 let running = false;
 let inferMs = 0;
 let fps = 0;
 let lastFrame = 0;
 
+MODELS.forEach(m => modelEl.add(new Option(m.label)));
 startBtn.addEventListener('click', start, { once: true });
 
 async function start() {
@@ -48,16 +62,15 @@ async function start() {
     view.width = fg.width = video.videoWidth;
     view.height = fg.height = video.videoHeight;
 
-    statusEl.textContent = 'モデルを読み込んでいます…';
-    const segmenter = await createSkySegmenter();
+    await setModel(0);
 
-    statusEl.textContent = '';
     startBtn.hidden = true;
     statsEl.hidden = false;
     running = true;
+    modelEl.addEventListener('change', () => setModel(modelEl.selectedIndex));
 
     requestAnimationFrame(render); // 描画は 60fps 側
-    inferenceLoop(segmenter); // 推論は端末性能なりの速度で回す
+    inferenceLoop(); // 推論は端末性能なりの速度で回す
   } catch (err) {
     console.error(err);
     statusEl.textContent = `起動できませんでした: ${err.message}`;
@@ -69,8 +82,24 @@ async function start() {
  * 推論ループ。描画ループとは独立して回り、最新のマスクだけを更新する。
  * 推論が数fpsでも、描画は常に最新マスクを使い回すので映像はカクつかない。
  */
-async function inferenceLoop(segmenter) {
+async function setModel(i) {
+  loadingModel = true;
+  statusEl.textContent = `モデルを読み込んでいます… (${MODELS[i].label})`;
+  const next = await createSkySegmenter(MODELS[i].options);
+  segmenter?.dispose();
+  segmenter = next;
+  smoothed = null; // マスクの解像度が変わるので作り直す
+  maskImage = null;
+  statusEl.textContent = '';
+  loadingModel = false;
+}
+
+async function inferenceLoop() {
   while (running) {
+    if (loadingModel || !segmenter) {
+      await new Promise(r => setTimeout(r, 100));
+      continue;
+    }
     const t0 = performance.now();
     try {
       updateMask(await segmenter.segment(video));

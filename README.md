@@ -15,8 +15,21 @@ index.html          UI（canvas と開始ボタンだけ）
 app.js              カメラ取得・描画ループ・合成
 sky-segmenter.js    ★ 空マスク推論だけの独立モジュール（依存は onnxruntime-web のみ）
 models/             同梱 ONNX モデルとそのライセンス
-tools/convert.py    モデルを再生成するための変換スクリプト（通常は実行不要）
+tools/              モデルを再生成するためのスクリプト群（通常は実行不要）
 ```
+
+## 同梱モデル
+
+画面上部のセレクトボックスで切り替えて見比べられます。
+
+| モデル | サイズ | 推論(Chrome/wasm 1スレッド) | 中身 |
+|---|---|---|---|
+| **PP-MobileSeg-Base** | 22.6 MB | 約 130 ms | ADE20K 150 クラスのうち `sky` を取り出す。品質重視 |
+| **TinySkyNet** | **199 KB** | **約 13 ms** | 上のモデルを教師に蒸留した空専用の二値 CNN（49,233 パラメータ）|
+
+TinySkyNet は Open Images の市街地写真 3,839 枚に教師で擬似ラベルを付けて学習したものです。
+**サイズ 1/116・速度 10 倍**になる代わりに、明るく平坦な壁面を空と誤判定することがあります。
+作り方は [tools/README.md](tools/README.md) に、判断材料は [models/README.md](models/README.md) にまとめています。
 
 ## 使い方（ローカル）
 
@@ -60,8 +73,11 @@ ADE20K 150 クラスのセマンティックセグメンテーションモデル
 
 - 前処理: 512×512 に縮小 → RGB を 0-1 → ImageNet 正規化 → NCHW
 - 後処理: 出力ロジット `[1,150,64,64]` から
-  `p = sigmoid(sky - max(その他のクラス))` で空である確率（0〜1）を作る
+  `p = sigmoid(sky - max(その他のクラス) - skyMargin)` で空である確率（0〜1）を作る
   - 150 クラスの softmax を全部計算するより安く、境界がなめらかになります
+  - `skyMargin`（既定 2）は「空が他クラスに差をつけて勝ったときだけ空とみなす」ためのバイアス。
+    霞んだ遠景の地面は `sky=+5.65` に対し `land=+3.33` と僅差で空が勝ってしまうため、
+    単純な argmax（margin 0）だと地平線に空の帯が残ります。本当の空は差が 8 前後あるので影響を受けません
 - **エッジ吸着**: 64×64 のままでは稜線がにじむため、映像の輝度をガイドにした
   [ガイデッドフィルタ](https://kaiminghe.github.io/eccv10/) を 256×256 で掛けて
   マスクを被写体の輪郭に吸着させます（+約 10 ms、モデルを重くせずに境界だけ改善できる）
@@ -110,15 +126,13 @@ ADE20K 150 クラスのセマンティックセグメンテーションモデル
 
 | 環境 | マスク 1 枚（推論＋エッジ吸着） |
 |---|---|
-| Apple Silicon Mac / Chrome / wasm 1スレッド | 約 130 ms |
-| 同 / Python onnxruntime 1スレッド（推論のみ） | 約 70 ms |
+| Apple Silicon Mac / Chrome / wasm 1スレッド（PP-MobileSeg-Base） | 約 130 ms |
+| 同（TinySkyNet） | 約 13 ms |
 
 スマートフォンでは数倍かかりますが、上記のループ分離により**表示は 60fps のまま**です
 （マスクの更新だけが数 fps になり、カメラを速く振ったときに少し遅れて追従します）。
 
-より軽い [PP-MobileSeg-Tiny](https://github.com/PaddlePaddle/PaddleSeg/tree/develop/configs/pp_mobileseg)
-（6MB / 推論 31ms）にも差し替えられますが、マスクが 32×32 になり稜線がにじみます。
-判断材料は [models/README.md](models/README.md) にまとめてあります。
+さらに軽くしたい場合は TinySkyNet に切り替えてください（`app.js` の `MODELS` 参照）。
 
 ### さらに速くしたい場合
 
@@ -131,5 +145,7 @@ ADE20K 150 クラスのセマンティックセグメンテーションモデル
 ## ライセンス
 
 - **コード**: MIT（[LICENSE](LICENSE)）
-- **同梱モデル**: Apache-2.0（PaddleSeg / PP-MobileSeg-Base）
-  — 学習データ ADE20K に関する注意を含め、[models/README.md](models/README.md) を必ずお読みください
+- **同梱モデル**:
+  - PP-MobileSeg-Base: Apache-2.0（PaddleSeg）
+  - TinySkyNet: MIT（このリポジトリで学習。学習画像は Open Images の CC BY 2.0 写真）
+  — 学習データに関する注意を含め、[models/README.md](models/README.md) を必ずお読みください

@@ -1,3 +1,6 @@
 .DS_Store
 tools/.venv/
+dataset/
 tools/_work/
+
+tools/__pycache__/

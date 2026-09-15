@@ -17,10 +17,16 @@ export const SKY_SEGMENTER_DEFAULTS = {
   inputSize: 512, // モデルの入力解像度（この ONNX は固定 512x512）
   skyClassIndex: 2, // ADE20K の 150 クラス中 2 番が "sky"
   // ---------------------------------------------
+  // 「空」が他クラスにこれだけ差をつけて勝ったときだけ空とみなすマージン。
+  // 0 だと単純な argmax と同じで、霞んだ遠景の地面を空と誤判定しやすい
+  // （実測では sky=+5.65 に対し land=+3.33 で空が勝ってしまう）。
+  // 2 前後にすると、その帯だけが前景に戻り、本当の空（差が 8 前後）は影響を受けない。
+  skyMargin: 2,
   // モデル出力は 64x64 と粗いので、映像そのものをガイドにして
   // マスクの境界を被写体の輪郭へ吸着させる（0 にすると無効）。
   refineRadius: 8,
   refineEps: 1e-4,
+  refineSize: 256, // エッジ吸着を行う解像度（inputSize の約数にすること）
   ortWasmPaths: 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.29.0/dist/',
 };
 
@@ -44,7 +50,8 @@ export async function createSkySegmenter(options = {}) {
   });
 
   const size = cfg.inputSize;
-  const guideSize = size >> 1; // 精緻化を行う解像度（入力の半分）
+  const guideSize = cfg.refineSize;
+  const guideStep = Math.max(1, Math.round(size / guideSize));
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = size;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -74,7 +81,7 @@ export async function createSkySegmenter(options = {}) {
     // 3. あわせて、エッジ吸着用のガイド画像（輝度）を 1/2 解像度で作る
     for (let y = 0; y < guideSize; y++) {
       for (let x = 0; x < guideSize; x++) {
-        const p = ((y * 2) * size + x * 2) * 4;
+        const p = (y * guideStep * size + x * guideStep) * 4;
         guide[y * guideSize + x] =
           (rgba[p] * 0.299 + rgba[p + 1] * 0.587 + rgba[p + 2] * 0.114) / 255;
       }
@@ -88,19 +95,24 @@ export async function createSkySegmenter(options = {}) {
     const [, numClasses, h, w] = logits.dims;
     const values = logits.data;
 
-    // 5. 「空」と「空以外の最大」の 2 値ソフトマックス = sigmoid(sky - maxOther)
+    // 5. 「空」と「空以外の最大」の 2 値ソフトマックス = sigmoid(sky - maxOther - margin)
     //    150 クラス全部の softmax より安く、境界がなめらかな確率になる。
     const area = h * w;
     const coarse = new Float32Array(area);
-    for (let i = 0; i < area; i++) {
-      const sky = values[cfg.skyClassIndex * area + i];
-      let other = -Infinity;
-      for (let c = 0; c < numClasses; c++) {
-        if (c === cfg.skyClassIndex) continue;
-        const v = values[c * area + i];
-        if (v > other) other = v;
+    if (numClasses === 1) {
+      // 空/非空の二値モデル: ロジットをそのまま sigmoid するだけ
+      for (let i = 0; i < area; i++) coarse[i] = 1 / (1 + Math.exp(-values[i]));
+    } else {
+      for (let i = 0; i < area; i++) {
+        const sky = values[cfg.skyClassIndex * area + i];
+        let other = -Infinity;
+        for (let c = 0; c < numClasses; c++) {
+          if (c === cfg.skyClassIndex) continue;
+          const v = values[c * area + i];
+          if (v > other) other = v;
+        }
+        coarse[i] = 1 / (1 + Math.exp(other - sky + cfg.skyMargin));
       }
-      coarse[i] = 1 / (1 + Math.exp(other - sky));
     }
 
     if (!cfg.refineRadius) return { width: w, height: h, data: coarse };
