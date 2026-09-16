@@ -52,6 +52,13 @@ class SkyData(Dataset):
         return x, torch.from_numpy(l[:, :, 0]), torch.from_numpy(l[:, :, 1])
 
 
+def save(obj, path):
+    """書き込み中に止められてもファイルが壊れないよう、別名で書いてから差し替える"""
+    tmp = str(path) + '.tmp'
+    torch.save(obj, tmp)
+    Path(tmp).replace(path)
+
+
 def iou(pred, target):
     p, t = pred > 0.5, target > 0.5
     inter = (p & t).sum()
@@ -60,18 +67,34 @@ def iou(pred, target):
 
 
 def main():
+    # 使い方: train.py [エポック数] [ラベルのディレクトリ] [チェックポイントの保存先]
+    #   例) train.py 40 dataset/labels_skyseg dataset/tinyskynet_skyseg.pt
+    #
+    # 毎エポック <保存先>.last に途中経過（optimizer と scheduler を含む）を書くので、
+    # 止めたあと同じコマンドを打てば続きから再開する。
+    # <保存先> 本体には val IoU が最良のときだけ重みを書き出す（export_onnx.py はこちらを読む）。
+    lab_root = sys.argv[2] if len(sys.argv) > 2 else 'dataset/labels'
+    ckpt = sys.argv[3] if len(sys.argv) > 3 else 'dataset/tinyskynet.pt'
     dev = 'mps' if torch.backends.mps.is_available() else 'cpu'
-    tr = DataLoader(SkyData('dataset/images/train', 'dataset/labels/train', True), batch_size=16,
+    tr = DataLoader(SkyData('dataset/images/train', f'{lab_root}/train', True), batch_size=16,
                     shuffle=True, num_workers=4, drop_last=True, persistent_workers=True)
-    va = DataLoader(SkyData('dataset/images/val', 'dataset/labels/val', False), batch_size=16, num_workers=2)
-    print(f'train {len(tr.dataset)} / val {len(va.dataset)} images, device={dev}')
+    va = DataLoader(SkyData('dataset/images/val', f'{lab_root}/val', False), batch_size=16, num_workers=2)
+    print(f'train {len(tr.dataset)} / val {len(va.dataset)} images, device={dev}, labels={lab_root}')
 
     net = TinySkyNet().to(dev)
     epochs = int(sys.argv[1]) if len(sys.argv) > 1 else 30
     opt = torch.optim.AdamW(net.parameters(), lr=3e-3, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, 3e-3, epochs=epochs, steps_per_epoch=len(tr))
     best = 0.0
-    for ep in range(epochs):
+    start = 0
+    last = ckpt + '.last'
+    if Path(last).exists():   # 中断した学習の再開
+        st = torch.load(last, map_location=dev, weights_only=False)
+        net.load_state_dict(st['model']); opt.load_state_dict(st['opt'])
+        sched.load_state_dict(st['sched']); best = st['best']; start = st['ep']
+        print(f'resume from {last}: epoch {start + 1} から / best {best:.4f}', flush=True)
+
+    for ep in range(start, epochs):
         net.train(); t0 = time.time(); tot = 0.0
         for x, y, c in tr:
             x, y, c = x.to(dev), y.to(dev), c.to(dev)
@@ -94,7 +117,10 @@ def main():
               f'({time.time()-t0:.0f}s)', flush=True)
         if m > best:
             best = m
-            torch.save(net.state_dict(), 'dataset/tinyskynet.pt')
+            save(net.state_dict(), ckpt)
+        # 途中経過は毎エポック上書きする（ここで止めても次回は続きから）
+        save({'ep': ep + 1, 'best': best, 'model': net.state_dict(),
+              'opt': opt.state_dict(), 'sched': sched.state_dict()}, last)
     print('best val IoU:', round(best, 4))
 
 

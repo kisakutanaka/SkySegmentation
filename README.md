@@ -20,24 +20,27 @@ tools/              モデルを再生成するためのスクリプト群（通
 
 ## 同梱モデル
 
-ページが読み込むのは **`models/tinyskynet_sky_256.onnx` の 199KB だけ**です。
+ページが読み込むのは **`models/tinyskynet_skyseg_256.onnx` の 199KB だけ**です。
 
 | 項目 | 値 |
 |---|---|
 | サイズ | **199 KB** |
 | パラメータ数 | 49,233（depthwise separable conv のみの UNet）|
 | 入力 / 出力 | `[1,3,256,256]` → `[1,1,128,128]` のロジット |
-| 推論（Chrome / wasm 1スレッド） | **約 12 ms** |
+| 推論（Chrome / wasm 1スレッド） | **約 18 ms**（エッジ吸着込み）|
 
-ADE20K 150 クラスのモデル（PP-MobileSeg-Base, 22.6MB）を教師にして、
-「空か否か」の 1 ビットだけを出すように蒸留したものです。
-`models/` にはその教師も置いてありますが、**擬似ラベルを作り直すとき以外は使いません**。
+空専用の大きなモデル [SkySeg](https://huggingface.co/JianyuanWang/skyseg)（U-2-Net, 168MB, MIT）を
+教師にして蒸留したものです。教師はリポジトリに含めていません（`tools/README.md` の手順で取得します）。
+
+`models/tinyskynet_sky_256.onnx` は ADE20K 由来の教師（PP-MobileSeg-Base）で学習した旧版で、
+比較用に残してあります。`models/` にはその PP-MobileSeg-Base 本体も置いてありますが、
+**ブラウザからは読み込まれません**。
 作り方は [tools/README.md](tools/README.md)、判断材料は [models/README.md](models/README.md) を参照してください。
 
 ## 手元の画像・動画で試す
 
 ```bash
-tools/.venv/bin/python tools/run_demo.py models/tinyskynet_sky_256.onnx \
+tools/.venv/bin/python tools/run_demo.py models/tinyskynet_skyseg_256.onnx \
     path/to/photo.png path/to/clip.mp4 out/
 ```
 
@@ -117,7 +120,7 @@ python3 -m http.server 8000
 
 ## 他のプロジェクトで使うには
 
-`sky-segmenter.js` と `models/tinyskynet_sky_256.onnx`（199KB）をコピーし、
+`sky-segmenter.js` と `models/tinyskynet_skyseg_256.onnx`（199KB）をコピーし、
 onnxruntime-web を読み込むだけです。
 
 ```html
@@ -144,9 +147,9 @@ onnxruntime-web を読み込むだけです。
 スマートフォンでは数倍かかりますが、上記のループ分離により**表示は 60fps のまま**です
 （マスクの更新だけが数 fps になり、カメラを速く振ったときに少し遅れて追従します）。
 
-精度を優先したい場合は、教師の PP-MobileSeg-Base に戻せます（`sky-segmenter.js` の
-`modelUrl` を `./models/pp_mobileseg_base_ade20k_512.onnx`、`inputSize` を `512` にするだけ）。
-22.6MB になり推論も 10 倍かかりますが、明るい壁面の誤判定は減ります。
+精度を優先したい場合は、`sky-segmenter.js` の `modelUrl` と `inputSize` を書き換えて
+`models/pp_mobileseg_base_ade20k_512.onnx`（22.6MB / `inputSize` 512）に差し替えられます。
+教師の SkySeg 自体（168MB・1枚 400ms 超）はリアルタイムには向きません。
 
 ### さらに速くしたい場合
 
@@ -163,5 +166,6 @@ onnxruntime-web を読み込むだけです。
   — **Public Domain (CC0)**。透明な余白を落として 550×600 に縮小しています
 - **同梱モデル**:
   - TinySkyNet（ページが読み込むもの）: MIT（このリポジトリで学習。学習画像は Open Images の CC BY 2.0 写真）
-  - PP-MobileSeg-Base（教師。擬似ラベル生成用）: Apache-2.0（PaddleSeg）
+  - 教師の SkySeg: MIT（[xiongzhu666/Sky-Segmentation-and-Post-processing](https://github.com/xiongzhu666/Sky-Segmentation-and-Post-processing) 由来。学習データは非公開）
+  - PP-MobileSeg-Base（旧版の教師）: Apache-2.0（PaddleSeg）
   — 学習データに関する注意を含め、[models/README.md](models/README.md) を必ずお読みください

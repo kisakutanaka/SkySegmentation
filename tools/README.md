@@ -39,9 +39,28 @@ tools/.venv/bin/python tools/fetch_images.py train dataset/train_ids.txt 12000 d
 
 ### B-2. 擬似ラベルを作る
 
-教師（PP-MobileSeg-Base + マージン + ガイデッドフィルタ）で空マスクを生成します。
-PNG の R チャンネルに空確率、G チャンネルに**教師の確信度**を入れ、
-確信度が低い画素は学習時に損失から除外します（教師が迷っている場所を生徒に教えない）。
+教師は空専用の [SkySeg](https://huggingface.co/JianyuanWang/skyseg)（U-2-Net, 168MB, MIT）です。
+リポジトリには含めていないので取得してください。
+
+```bash
+curl -L -o dataset/skyseg.onnx \
+    https://huggingface.co/JianyuanWang/skyseg/resolve/main/skyseg.onnx
+```
+
+PNG の R チャンネルに空確率、G チャンネルに教師の確信度を入れます。
+SkySeg は 320×320 のソフトマットを返すので、確率そのものが境界の曖昧さを表しており、
+確信度は一律 255（ソフトターゲットとして学習させる）です。
+
+```bash
+# 1枚 0.4 秒ほどかかるので、シャード番号とシャード数を渡して並列に回す
+for k in 0 1 2 3; do
+  tools/.venv/bin/python tools/pseudo_label_skyseg.py dataset/skyseg.onnx \
+      dataset/images/train dataset/labels_skyseg/train $k 4 &
+done; wait
+```
+
+旧版（ADE20K 由来の PP-MobileSeg-Base を教師にしたもの）は `pseudo_label.py` です。
+こちらは 64×64 の出力をガイデッドフィルタで 256 に起こすため、境界が甘くなります。
 
 ```bash
 tools/.venv/bin/python tools/pseudo_label.py \
@@ -54,16 +73,22 @@ tools/.venv/bin/python tools/pseudo_label.py \
 入力 256×256、出力 128×128 のロジット 1 チャンネルです。
 
 ```bash
-PYTHONPATH=tools tools/.venv/bin/python tools/train.py 40   # → dataset/tinyskynet.pt
+# train.py [エポック数] [ラベルのディレクトリ] [チェックポイントの保存先]
+PYTHONPATH=tools tools/.venv/bin/python tools/train.py 40 \
+    dataset/labels_skyseg dataset/tinyskynet_skyseg.pt
 PYTHONPATH=tools tools/.venv/bin/python tools/export_onnx.py \
-    dataset/tinyskynet.pt models/tinyskynet_sky_256.onnx
+    dataset/tinyskynet_skyseg.pt models/tinyskynet_skyseg_256.onnx
 ```
+
+毎エポック `<保存先>.last` に optimizer と scheduler ごと書き出すので、
+途中で止めて同じコマンドを打てば続きから再開します。
+`<保存先>` 本体には val IoU が最良のときだけ重みが入ります（`export_onnx.py` はこちらを読む）。
 
 ### B-4. 教師と比べる
 
 ```bash
 tools/.venv/bin/python tools/compare.py \
-    models/pp_mobileseg_base_ade20k_512.onnx models/tinyskynet_sky_256.onnx \
+    models/pp_mobileseg_base_ade20k_512.onnx models/tinyskynet_skyseg_256.onnx \
     dataset/images/val 8 /tmp/compare.png
 ```
 

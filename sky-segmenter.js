@@ -13,7 +13,7 @@
 
 export const SKY_SEGMENTER_DEFAULTS = {
   // ---- ここを差し替えればモデルを変更できます ----
-  modelUrl: './models/tinyskynet_sky_256.onnx',
+  modelUrl: './models/tinyskynet_skyseg_256.onnx',
   inputSize: 256, // モデルの入力解像度（この ONNX は固定 256x256）
   skyClassIndex: 2, // ADE20K 系のモデルに差し替えたとき、150 クラス中 2 番が "sky"
   // ---------------------------------------------
